@@ -2,10 +2,11 @@
 set -Eeuo pipefail
 
 # =========================================
-# NIALTV SECURE – FULL AUTOSCRIPT + PANEL
+# NIALTV PREMIUM XTREAM – FULL AUTOSCRIPT + PANEL
 # Ubuntu 24.04 ONLY
 # =========================================
 
+# ===== COLORS =====
 GREEN="\e[1;32m"
 RED="\e[1;31m"
 YELLOW="\e[1;33m"
@@ -21,7 +22,7 @@ echo -e "${NC}"
 
 # ===== OS CHECK =====
 if ! lsb_release -rs | grep -q "^24"; then
-  echo -e "${RED}❌ Only Ubuntu 24.04 supported${NC}"
+  echo -e "${RED}❌ This script supports Ubuntu 24.04 only${NC}"
   exit 1
 fi
 
@@ -29,9 +30,9 @@ fi
 read -rp "DOMAIN NAME : " DOMAIN
 EMAIL="admin@$DOMAIN"
 
-# ===== DEPENDENCIES =====
+# ===== BASIC DEPENDENCIES =====
 apt update -y
-apt install -y python3 python3-venv python3-pip curl jq ufw certbot ca-certificates
+apt install -y python3 python3-venv python3-pip curl jq certbot ufw ca-certificates
 
 # ===== FIREWALL =====
 ufw allow 22/tcp
@@ -42,6 +43,7 @@ ufw --force enable
 # ===== DIRECTORIES =====
 mkdir -p "$BASE"
 cd "$BASE"
+
 echo "DOMAIN=$DOMAIN" > .env
 echo "{}" > users.json
 echo "#EXTM3U" > playlist.m3u
@@ -51,36 +53,61 @@ LOG="$BASE/nialtv.log"
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install flask
+pip install flask m3u8
 
-# ===== CERTBOT SSL =====
-certbot certonly --standalone -d "$DOMAIN" -m "$EMAIL" --agree-tos --non-interactive
-
-# ===== FLASK SERVER =====
+# ===== FLASK XTREAM SERVER =====
 cat > app.py <<EOF
 from flask import Flask, request, Response, jsonify
 import json, datetime, os
+import m3u8
 
 BASE = "$BASE"
-USERS = f"{BASE}/users.json"
-PLAYLIST = f"{BASE}/playlist.m3u"
-SSL_CERT = "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-SSL_KEY = "/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+USERS_FILE = f"{BASE}/users.json"
+PLAYLIST_FILE = f"{BASE}/playlist.m3u"
 
 app = Flask(__name__)
 
 def load_users():
-    with open(USERS) as f:
+    with open(USERS_FILE) as f:
         return json.load(f)
 
-def save_users(d):
-    with open(USERS, "w") as f:
-        json.dump(d, f, indent=2)
+def save_users(users):
+    with open(USERS_FILE,"w") as f:
+        json.dump(users,f,indent=2)
 
 def expired(date):
     return datetime.date.today() > datetime.datetime.strptime(date,"%Y-%m-%d").date()
 
-# ===== PLAYER API / M3U8 =====
+def convert_m3u_xtream():
+    """Parse playlist.m3u to Xtream Codes compatible"""
+    try:
+        pl = m3u8.load(PLAYLIST_FILE)
+        lines = ["#EXTM3U"]
+        for seg in pl.segments:
+            lines.append(f"#EXTINF:-1,{seg.title or 'Channel'}")
+            lines.append(seg.uri)
+        return "\\n".join(lines)
+    except Exception as e:
+        return "#EXTM3U\\n"
+
+@app.route("/player_api.php")
+def player_api():
+    u = request.args.get("username")
+    p = request.args.get("password")
+    ip = request.remote_addr
+    users = load_users()
+    if u not in users:
+        return jsonify({"user_info":{"auth":0}})
+    user = users[u]
+    if user["password"] != p or expired(user["expiry"]):
+        return jsonify({"user_info":{"auth":0}})
+    if user.get("ip") and user["ip"] != ip:
+        user["ip"] = ip
+    else:
+        user["ip"] = ip
+    save_users(users)
+    return jsonify({"user_info":{"auth":1,"username":u,"exp_date":user["expiry"]}})
+
 @app.route("/get.php")
 def get_m3u():
     u = request.args.get("username")
@@ -92,34 +119,21 @@ def get_m3u():
     user = users[u]
     if user["password"] != p or expired(user["expiry"]):
         return "Unauthorized",401
-    user["ip"] = ip
-    save_users(users)
-    return Response(open(PLAYLIST).read(), mimetype="audio/x-mpegurl")
-
-# ===== SELLER PANEL =====
-@app.route("/player_api.php")
-def player_api():
-    u = request.args.get("username")
-    p = request.args.get("password")
-    ip = request.remote_addr
-    ua = request.headers.get("User-Agent","")
-    users = load_users()
-    if u not in users:
-        return jsonify({"user_info":{"auth":0}})
-    user = users[u]
-    if user["password"] != p or expired(user["expiry"]):
-        return jsonify({"user_info":{"auth":0}})
-    user["ip"] = ip
-    user["ua"] = ua
-    save_users(users)
-    return jsonify({"user_info":{"auth":1,"username":u,"exp_date":user["expiry"]}})
+    if user.get("ip") and user["ip"] != ip:
+        return "Device limit",403
+    content = convert_m3u_xtream()
+    return Response(content, mimetype="audio/x-mpegurl")
 
 if __name__ == "__main__":
-    from werkzeug.serving import make_ssl_devcert
-    app.run(host="0.0.0.0", port=80)
+    app.run(
+        host="0.0.0.0",
+        port=80,
+        ssl_context=(f"/etc/letsencrypt/live/{DOMAIN}/fullchain.pem",
+                     f"/etc/letsencrypt/live/{DOMAIN}/privkey.pem")
+    )
 EOF
 
-# ===== SELLER PANEL SCRIPT =====
+# ===== SELLER PANEL =====
 cat > seller.sh <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -142,7 +156,7 @@ while true; do
     CPU="$(nproc --all) Core"
     IP=$(curl -s ipinfo.io/ip)
     DOMAIN=${DOMAIN:-N/A}
-    URL="https://$DOMAIN/player_api.php"
+    URL="http://$DOMAIN/get.php"
     SERVICE_STATUS=$(systemctl is-active $SERVICE || echo "inactive")
     CLIENTS=$(jq length "$USERS" 2>/dev/null || echo 0)
 
@@ -203,7 +217,7 @@ while true; do
             ;;
         4)
             echo -e "${GREEN}=== LIST OF USERS ===${NC}"
-            jq -r 'to_entries[] | "\(.key) | Exp: \(.value.expiry) | Status: \((if (.value.expiry | strptime("%Y-%m-%d") | mktime) < (now) then "Expired" else "Active" end)) | M3U: \(.value.m3u)"' "$USERS"
+            jq -r 'to_entries[] | "\(.key) | Exp: \(.value.expiry) | M3U: \(.value.m3u)"' "$USERS"
             read -n1 -r -p "Press any key to continue..."
             ;;
         5)
@@ -234,10 +248,13 @@ EOF
 
 chmod +x seller.sh
 
+# ===== SSL =====
+certbot certonly --standalone -d "$DOMAIN" -m "$EMAIL" --agree-tos --non-interactive
+
 # ===== SYSTEMD SERVICE =====
 cat > /etc/systemd/system/nialtv.service <<EOF
 [Unit]
-Description=NIALTV SECURE IPTV AUTH
+Description=NIALTV PREMIUM XTREAM IPTV AUTH
 After=network.target
 
 [Service]
@@ -257,5 +274,7 @@ systemctl restart nialtv
 # ===== AUTO OPEN PANEL ON SSH LOGIN =====
 grep -qxF "$BASE/seller.sh" /etc/profile || echo "$BASE/seller.sh" >> /etc/profile
 
-echo -e "${GREEN}✅ INSTALL COMPLETE${NC}"
-echo -e "${YELLOW}NOTE: IPTV HTTP port 80, seller panel via SSH.${NC}"
+# ===== AUTOREBOOT AFTER INSTALL (10s) =====
+echo -e "${YELLOW}⚠️ System will reboot in 10 seconds to apply changes...${NC}"
+sleep 10
+reboot now
