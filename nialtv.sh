@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # =========================================
-# NIALTV PREMIUM – FULL AUTOSCRIPT + PANEL
+# NIALTV PREMIUM ULTRA – FULL AUTOSCRIPT + PANEL
 # Ubuntu 24.04 ONLY
 # =========================================
 
@@ -16,7 +16,9 @@ BASE="/opt/nialtv"
 SERVICE="nialtv"
 
 clear
-echo -e "${GREEN}================= NIALTV PANEL =================${NC}"
+echo -e "${GREEN}"
+echo "================= NIALTV INSTALLER ================="
+echo -e "${NC}"
 
 # ===== OS CHECK =====
 if ! lsb_release -rs | grep -q "^24"; then
@@ -46,6 +48,7 @@ cd "$BASE"
 echo "DOMAIN=$DOMAIN" > .env
 echo "{}" > users.json
 echo "#EXTM3U" > playlist.m3u
+LOG="$BASE/nialtv.log"
 
 # ===== PYTHON ENV =====
 python3 -m venv venv
@@ -53,7 +56,7 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install flask
 
-# ===== FLASK AUTH SERVER =====
+# ===== FLASK SERVER =====
 cat > app.py <<EOF
 from flask import Flask, request, Response, jsonify
 import json, datetime, os
@@ -61,7 +64,6 @@ import json, datetime, os
 BASE = "$BASE"
 USERS = f"{BASE}/users.json"
 PLAYLIST = f"{BASE}/playlist.m3u"
-DOMAIN = os.environ.get("DOMAIN")
 
 app = Flask(__name__)
 
@@ -128,6 +130,7 @@ set -Eeuo pipefail
 
 BASE="/opt/nialtv"
 USERS="$BASE/users.json"
+LOG="$BASE/nialtv.log"
 source "$BASE/.env"
 
 GREEN="\e[1;32m"
@@ -148,14 +151,18 @@ while true; do
     CLIENTS=$(jq length "$USERS" 2>/dev/null || echo 0)
 
     echo -e "${GREEN}================= NIALTV PANEL =================${NC}"
-    echo -e "OS       : $OS"
-    echo -e "RAM      : $RAM"
-    echo -e "CPU      : $CPU"
-    echo -e "IP       : $IP"
-    echo -e "DOMAIN   : $DOMAIN"
-    echo -e "URL      : $URL"
-    echo -e "SERVICE  : $SERVICE_STATUS"
-    echo -e "Clients  : $CLIENTS"
+    echo -e "${GREEN}OS      :${NC} $OS"
+    echo -e "${GREEN}RAM     :${NC} $RAM"
+    echo -e "${GREEN}CPU     :${NC} $CPU"
+    echo -e "${GREEN}IP      :${NC} $IP"
+    echo -e "${GREEN}DOMAIN  :${NC} $DOMAIN"
+    echo -e "${GREEN}URL     :${NC} $URL"
+    if [[ "$SERVICE_STATUS" == "active" ]]; then
+        echo -e "${GREEN}SERVICE :✅ active${NC}"
+    else
+        echo -e "${RED}SERVICE :❌ inactive${NC}"
+    fi
+    echo -e "${GREEN}Clients :${NC} $CLIENTS"
     echo -e "${GREEN}==============================================${NC}"
 
     echo -e "[1] Create User"
@@ -171,17 +178,21 @@ while true; do
 
     case $opt in
         1)
-            read -rp "Username   : " u
-            read -rp "Password   : " p
-            read -rp "Valid days : " d
+            read -rp "Username: " u
+            read -rp "Password: " p
+            read -rp "Valid days: " d
             exp=$(date -d "+$d days" +%Y-%m-%d)
-            jq ". + {\"$u\":{\"password\":\"$p\",\"expiry\":\"$exp\",\"ip\":\"\",\"ua\":\"\"}}" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            m3u_link="https://$DOMAIN:8080/get.php?username=$u&password=$p"
+            jq ". + {\"$u\":{\"password\":\"$p\",\"expiry\":\"$exp\",\"ip\":\"\",\"ua\":\"\",\"m3u\":\"$m3u_link\"}}" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            echo -e "$(date '+%Y-%m-%d %H:%M:%S') - ✅ USER CREATED: $u | EXP: $exp | M3U: $m3u_link" >> "$LOG"
             echo -e "${GREEN}✅ USER CREATED: $u | EXP: $exp${NC}"
+            echo -e "${GREEN}M3U Link: $m3u_link${NC}"
             read -n1 -r -p "Press any key to continue..."
             ;;
         2)
             read -rp "Username to remove: " u
             jq "del(.\"$u\")" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            echo -e "$(date '+%Y-%m-%d %H:%M:%S') - ❌ USER REMOVED: $u" >> "$LOG"
             echo -e "${RED}❌ USER REMOVED: $u${NC}"
             read -n1 -r -p "Press any key to continue..."
             ;;
@@ -190,26 +201,32 @@ while true; do
             read -rp "Extra days: " d
             new_exp=$(date -d "+$d days" +%Y-%m-%d)
             jq ".\"$u\".expiry=\"$new_exp\"" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            echo -e "$(date '+%Y-%m-%d %H:%M:%S') - ✅ USER $u EXTENDED TO $new_exp" >> "$LOG"
             echo -e "${GREEN}✅ USER $u EXTENDED TO $new_exp${NC}"
             read -n1 -r -p "Press any key to continue..."
             ;;
         4)
-            jq . "$USERS" | less
+            echo -e "${GREEN}=== LIST OF USERS ===${NC}"
+            jq -r 'to_entries[] | "\(.key) | Exp: \(.value.expiry) | Status: \((if (.value.expiry | strptime("%Y-%m-%d") | mktime) < (now) then "Expired" else "Active" end)) | M3U: \(.value.m3u)"' "$USERS"
+            read -n1 -r -p "Press any key to continue..."
             ;;
         5)
             read -rp "M3U URL: " url
             curl -fsSL "$url" -o "$BASE/playlist.m3u"
+            echo -e "$(date '+%Y-%m-%d %H:%M:%S') - ✅ M3U UPDATED" >> "$LOG"
             echo -e "${GREEN}✅ M3U UPDATED${NC}"
             read -n1 -r -p "Press any key to continue..."
             ;;
         6)
             read -rp "Username to kick: " u
             jq ".\"$u\".ip=\"\"" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            echo -e "$(date '+%Y-%m-%d %H:%M:%S') - ✅ DEVICE KICKED: $u" >> "$LOG"
             echo -e "${GREEN}✅ DEVICE KICKED: $u${NC}"
             read -n1 -r -p "Press any key to continue..."
             ;;
         7)
             systemctl restart $SERVICE
+            echo -e "$(date '+%Y-%m-%d %H:%M:%S') - ✅ SERVICE RESTARTED" >> "$LOG"
             echo -e "${GREEN}✅ SERVICE RESTARTED${NC}"
             read -n1 -r -p "Press any key to continue..."
             ;;
@@ -224,7 +241,7 @@ chmod +x seller.sh
 # ===== SSL =====
 certbot certonly --standalone -d "$DOMAIN" -m "$EMAIL" --agree-tos --non-interactive
 
-# ===== SYSTEMD =====
+# ===== SYSTEMD SERVICE =====
 cat > /etc/systemd/system/nialtv.service <<EOF
 [Unit]
 Description=NIALTV PREMIUM IPTV AUTH
@@ -248,6 +265,6 @@ systemctl restart nialtv
 grep -qxF "$BASE/seller.sh" /etc/profile || echo "$BASE/seller.sh" >> /etc/profile
 
 # ===== AUTOREBOOT AFTER INSTALL (10s) =====
-echo -e "${YELLOW}⚠️  System will reboot in 10 seconds to apply changes...${NC}"
+echo -e "${YELLOW}⚠️ System will reboot in 10 seconds to apply changes...${NC}"
 sleep 10
 reboot now
