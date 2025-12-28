@@ -2,11 +2,10 @@
 set -Eeuo pipefail
 
 # =========================================
-# NIALTV PREMIUM ULTRA – FULL AUTOSCRIPT + PANEL
+# NIALTV SECURE – FULL AUTOSCRIPT + PANEL
 # Ubuntu 24.04 ONLY
 # =========================================
 
-# ===== COLORS =====
 GREEN="\e[1;32m"
 RED="\e[1;31m"
 YELLOW="\e[1;33m"
@@ -22,7 +21,7 @@ echo -e "${NC}"
 
 # ===== OS CHECK =====
 if ! lsb_release -rs | grep -q "^24"; then
-  echo -e "${RED}❌ This script supports Ubuntu 24.04 only${NC}"
+  echo -e "${RED}❌ Only Ubuntu 24.04 supported${NC}"
   exit 1
 fi
 
@@ -30,21 +29,19 @@ fi
 read -rp "DOMAIN NAME : " DOMAIN
 EMAIL="admin@$DOMAIN"
 
-# ===== BASIC DEPENDENCIES =====
+# ===== DEPENDENCIES =====
 apt update -y
-apt install -y python3 python3-venv python3-pip curl jq certbot ufw ca-certificates
+apt install -y python3 python3-venv python3-pip curl jq ufw certbot ca-certificates
 
 # ===== FIREWALL =====
 ufw allow 22/tcp
 ufw allow 80/tcp
 ufw allow 443/tcp
-ufw allow 8080/tcp
 ufw --force enable
 
 # ===== DIRECTORIES =====
 mkdir -p "$BASE"
 cd "$BASE"
-
 echo "DOMAIN=$DOMAIN" > .env
 echo "{}" > users.json
 echo "#EXTM3U" > playlist.m3u
@@ -56,6 +53,9 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install flask
 
+# ===== CERTBOT SSL =====
+certbot certonly --standalone -d "$DOMAIN" -m "$EMAIL" --agree-tos --non-interactive
+
 # ===== FLASK SERVER =====
 cat > app.py <<EOF
 from flask import Flask, request, Response, jsonify
@@ -64,6 +64,8 @@ import json, datetime, os
 BASE = "$BASE"
 USERS = f"{BASE}/users.json"
 PLAYLIST = f"{BASE}/playlist.m3u"
+SSL_CERT = "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+SSL_KEY = "/etc/letsencrypt/live/$DOMAIN/privkey.pem"
 
 app = Flask(__name__)
 
@@ -78,6 +80,23 @@ def save_users(d):
 def expired(date):
     return datetime.date.today() > datetime.datetime.strptime(date,"%Y-%m-%d").date()
 
+# ===== PLAYER API / M3U8 =====
+@app.route("/get.php")
+def get_m3u():
+    u = request.args.get("username")
+    p = request.args.get("password")
+    ip = request.remote_addr
+    users = load_users()
+    if u not in users:
+        return "Unauthorized",401
+    user = users[u]
+    if user["password"] != p or expired(user["expiry"]):
+        return "Unauthorized",401
+    user["ip"] = ip
+    save_users(users)
+    return Response(open(PLAYLIST).read(), mimetype="audio/x-mpegurl")
+
+# ===== SELLER PANEL =====
 @app.route("/player_api.php")
 def player_api():
     u = request.args.get("username")
@@ -90,40 +109,17 @@ def player_api():
     user = users[u]
     if user["password"] != p or expired(user["expiry"]):
         return jsonify({"user_info":{"auth":0}})
-    if user.get("ip") and user["ip"] != ip:
-        user["ip"] = ip
-        user["ua"] = ua
-    else:
-        user["ip"] = ip
-        user["ua"] = ua
+    user["ip"] = ip
+    user["ua"] = ua
     save_users(users)
     return jsonify({"user_info":{"auth":1,"username":u,"exp_date":user["expiry"]}})
 
-@app.route("/get.php")
-def get_m3u():
-    u = request.args.get("username")
-    p = request.args.get("password")
-    ip = request.remote_addr
-    users = load_users()
-    if u not in users:
-        return "Unauthorized",401
-    user = users[u]
-    if user["password"] != p or expired(user["expiry"]):
-        return "Unauthorized",401
-    if user.get("ip") and user["ip"] != ip:
-        return "Device limit",403
-    return Response(open(PLAYLIST).read(), mimetype="audio/x-mpegurl")
-
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=8080,
-        ssl_context=(f"/etc/letsencrypt/live/{DOMAIN}/fullchain.pem",
-                     f"/etc/letsencrypt/live/{DOMAIN}/privkey.pem")
-    )
+    from werkzeug.serving import make_ssl_devcert
+    app.run(host="0.0.0.0", port=80)
 EOF
 
-# ===== SELLER PANEL =====
+# ===== SELLER PANEL SCRIPT =====
 cat > seller.sh <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -146,7 +142,7 @@ while true; do
     CPU="$(nproc --all) Core"
     IP=$(curl -s ipinfo.io/ip)
     DOMAIN=${DOMAIN:-N/A}
-    URL="https://$DOMAIN:8080"
+    URL="https://$DOMAIN/player_api.php"
     SERVICE_STATUS=$(systemctl is-active $SERVICE || echo "inactive")
     CLIENTS=$(jq length "$USERS" 2>/dev/null || echo 0)
 
@@ -182,7 +178,7 @@ while true; do
             read -rp "Password: " p
             read -rp "Valid days: " d
             exp=$(date -d "+$d days" +%Y-%m-%d)
-            m3u_link="https://$DOMAIN:8080/get.php?username=$u&password=$p"
+            m3u_link="http://$DOMAIN/get.php?username=$u&password=$p"
             jq ". + {\"$u\":{\"password\":\"$p\",\"expiry\":\"$exp\",\"ip\":\"\",\"ua\":\"\",\"m3u\":\"$m3u_link\"}}" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
             echo -e "$(date '+%Y-%m-%d %H:%M:%S') - ✅ USER CREATED: $u | EXP: $exp | M3U: $m3u_link" >> "$LOG"
             echo -e "${GREEN}✅ USER CREATED: $u | EXP: $exp${NC}"
@@ -238,13 +234,10 @@ EOF
 
 chmod +x seller.sh
 
-# ===== SSL =====
-certbot certonly --standalone -d "$DOMAIN" -m "$EMAIL" --agree-tos --non-interactive
-
 # ===== SYSTEMD SERVICE =====
 cat > /etc/systemd/system/nialtv.service <<EOF
 [Unit]
-Description=NIALTV PREMIUM IPTV AUTH
+Description=NIALTV SECURE IPTV AUTH
 After=network.target
 
 [Service]
@@ -264,7 +257,5 @@ systemctl restart nialtv
 # ===== AUTO OPEN PANEL ON SSH LOGIN =====
 grep -qxF "$BASE/seller.sh" /etc/profile || echo "$BASE/seller.sh" >> /etc/profile
 
-# ===== AUTOREBOOT AFTER INSTALL (10s) =====
-echo -e "${YELLOW}⚠️ System will reboot in 10 seconds to apply changes...${NC}"
-sleep 10
-reboot now
+echo -e "${GREEN}✅ INSTALL COMPLETE${NC}"
+echo -e "${YELLOW}NOTE: IPTV HTTP port 80, seller panel via SSH.${NC}"
