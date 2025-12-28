@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # =========================================
-# NIALTV PREMIUM – FULL AUTOSCRIPT + AUTO PANEL
+# NIALTV PREMIUM – FULL AUTOSCRIPT + PANEL
 # Ubuntu 24.04 ONLY
 # =========================================
 
@@ -143,108 +143,91 @@ NC="\e[0m"
 SERVICE="nialtv"
 
 while true; do
-clear
+    clear
+    OS=$(lsb_release -ds)
+    RAM=$(free -m | awk '/Mem:/ {print $2 " MB"}')
+    CPU="$(nproc --all) Core"
+    IP=$(curl -s ipinfo.io/ip)
+    DOMAIN=${DOMAIN:-N/A}
+    URL="https://$DOMAIN:8080"
+    SERVICE_STATUS=$(systemctl is-active $SERVICE || echo "inactive")
+    CLIENTS=$(jq length "$USERS" 2>/dev/null || echo 0)
+    EXP=$(jq -r '.[].expiry' "$USERS" 2>/dev/null | sort | tail -n1 || echo "N/A")
 
-# ===== SYSTEM INFO =====
-OS=$(lsb_release -ds)
-RAM=$(free -m | awk '/Mem:/ {print $2 " MB"}')
-CPU="$(nproc --all) Core"
-IP=$(curl -s ipinfo.io/ip)
-CITY=$(curl -s ipinfo.io/city)
-ISP=$(curl -s ipinfo.io/org)
-UPTIME=$(uptime -p | sed 's/up //')
-DATE_NOW=$(date "+%d-%m-%Y %H:%M:%S")
-CLIENTS=$(jq length "$USERS" 2>/dev/null || echo 0)
-EXP=$(jq -r '.[].expiry' "$USERS" 2>/dev/null | sort | tail -n1 || echo "N/A")
-SERVICE_STATUS=$(systemctl is-active $SERVICE || echo "inactive")
-NET_SPEED="0.00 Mbps"
+    echo -e "${GREEN}================= NIALTV PANEL =================${NC}"
+    echo -e "${GREEN}OS           :${NC} $OS"
+    echo -e "${GREEN}RAM          :${NC} $RAM"
+    echo -e "${GREEN}CPU          :${NC} $CPU"
+    echo -e "${GREEN}IP           :${NC} $IP"
+    echo -e "${GREEN}DOMAIN       :${NC} $DOMAIN"
+    echo -e "${GREEN}URL          :${NC} $URL"
+    if [[ "$SERVICE_STATUS" == "active" ]]; then
+        echo -e "${GREEN}SERVICE      :✅ active${NC}"
+    else
+        echo -e "${RED}SERVICE      :❌ inactive${NC}"
+    fi
+    echo -e "${GREEN}Clients      :${NC} $CLIENTS"
+    echo -e "${GREEN}Next Expiry  :${NC} $EXP"
+    echo -e "${GREEN}==============================================${NC}"
 
-# ===== DISPLAY PANEL =====
-echo -e "$GREEN"
-cat <<EOF2
-╭════════════════════════════════════════════════════════╮
-│              ❄️ WELCOME TO PREMIUM SCRIPT ❄️           │
-╰════════════════════════════════════════════════════════╯
-      ══════════════════════════════════════════════
-       💻 OS           : $OS
-       💾 RAM          : $RAM
-       📟 CPU          : $CPU
-       📶 ISP          : $ISP
-       🌍 CITY         : $CITY
-       ⏳ UPTIME       : $UPTIME
-       📡 IP VPS       : $IP
-       🌐 DOMAIN       : ${DOMAIN:-N/A}
-       👨 CLIENTS      : $CLIENTS ACTIVE
-       📆 EXPIRED      : $EXP
-       🕒 DATE & TIME  : $DATE_NOW
-       🔗 VERSION CORE : NIALTV v1.0
-      ══════════════════════════════════════════════
-╭════════════════════════════╮╭══════════════════════════╮
-│  SERVICE STATUS: $SERVICE_STATUS  ││ SERVER SPEED: $NET_SPEED │
-╰════════════════════════════╯╰══════════════════════════╯
-╭════════════════════════╮╭═════════════╮╭═══════════════╮
-│     NIALTV PANEL MENU  │ TOTAL ACCOUNT │ BANDWIDTH USED│
-│ [01] • CREATE USER      │   $CLIENTS Accounts │  TODAY │
-│ [02] • REMOVE USER      │                     │       │
-│ [03] • EXTEND USER      │                     │       │
-│ [04] • LIST USERS       │                     │       │
-│ [05] • UPDATE M3U       │                     │       │
-│ [06] • KICK DEVICE      │                     │       │
-│ [07] • RESTART SERVICE  │                     │       │
-│ [X] • EXIT              │                     │       │
-╰════════════════════════╯╰═════════════╯╰═══════════════╯
-EOF2
-echo -e "$NC"
+    echo -e "[1] Create User"
+    echo -e "[2] Remove User"
+    echo -e "[3] Extend User"
+    echo -e "[4] List Users"
+    echo -e "[5] Update M3U"
+    echo -e "[6] Kick Device"
+    echo -e "[7] Restart Service"
+    echo -e "[X] Exit"
+    echo
+    read -rp "Select option [1-7 or x]: " opt
 
-read -rp "   Select From option [1-7 or x]: " opt
-
-case $opt in
-1)
- read -rp "Username   : " u
- read -rp "Password   : " p
- read -rp "Valid days : " d
- exp=$(date -d "+$d days" +%Y-%m-%d)
- jq ". + {\"$u\":{\"password\":\"$p\",\"expiry\":\"$exp\",\"ip\":\"\",\"ua\":\"\"}}" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
- echo -e "${GREEN}✅ USER CREATED: $u | EXP: $exp${NC}"
- read -n1 -r -p "Press any key to continue..."
- ;;
-2)
- read -rp "Username to remove: " u
- jq "del(.\"$u\")" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
- echo -e "${RED}❌ USER REMOVED: $u${NC}"
- read -n1 -r -p "Press any key to continue..."
- ;;
-3)
- read -rp "Username to extend: " u
- read -rp "Extra days: " d
- new_exp=$(date -d "+$d days" +%Y-%m-%d)
- jq ".\"$u\".expiry=\"$new_exp\"" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
- echo -e "${GREEN}✅ USER $u EXTENDED TO $new_exp${NC}"
- read -n1 -r -p "Press any key to continue..."
- ;;
-4)
- jq . "$USERS" | less
- ;;
-5)
- read -rp "M3U URL: " url
- curl -fsSL "$url" -o "$BASE/playlist.m3u"
- echo -e "${GREEN}✅ M3U UPDATED${NC}"
- read -n1 -r -p "Press any key to continue..."
- ;;
-6)
- read -rp "Username to kick: " u
- jq ".\"$u\".ip=\"\"" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
- echo -e "${GREEN}✅ DEVICE KICKED: $u${NC}"
- read -n1 -r -p "Press any key to continue..."
- ;;
-7)
- systemctl restart $SERVICE
- echo -e "${GREEN}✅ SERVICE RESTARTED${NC}"
- read -n1 -r -p "Press any key to continue..."
- ;;
-x|X) exit;;
-*) echo -e "${YELLOW}❌ Invalid option${NC}"; read -n1 -r -p "Press any key to continue...";;
-esac
+    case $opt in
+        1)
+            read -rp "Username   : " u
+            read -rp "Password   : " p
+            read -rp "Valid days : " d
+            exp=$(date -d "+$d days" +%Y-%m-%d)
+            jq ". + {\"$u\":{\"password\":\"$p\",\"expiry\":\"$exp\",\"ip\":\"\",\"ua\":\"\"}}" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            echo -e "${GREEN}✅ USER CREATED: $u | EXP: $exp${NC}"
+            read -n1 -r -p "Press any key to continue..."
+            ;;
+        2)
+            read -rp "Username to remove: " u
+            jq "del(.\"$u\")" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            echo -e "${RED}❌ USER REMOVED: $u${NC}"
+            read -n1 -r -p "Press any key to continue..."
+            ;;
+        3)
+            read -rp "Username to extend: " u
+            read -rp "Extra days: " d
+            new_exp=$(date -d "+$d days" +%Y-%m-%d)
+            jq ".\"$u\".expiry=\"$new_exp\"" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            echo -e "${GREEN}✅ USER $u EXTENDED TO $new_exp${NC}"
+            read -n1 -r -p "Press any key to continue..."
+            ;;
+        4)
+            jq . "$USERS" | less
+            ;;
+        5)
+            read -rp "M3U URL: " url
+            curl -fsSL "$url" -o "$BASE/playlist.m3u"
+            echo -e "${GREEN}✅ M3U UPDATED${NC}"
+            read -n1 -r -p "Press any key to continue..."
+            ;;
+        6)
+            read -rp "Username to kick: " u
+            jq ".\"$u\".ip=\"\"" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+            echo -e "${GREEN}✅ DEVICE KICKED: $u${NC}"
+            read -n1 -r -p "Press any key to continue..."
+            ;;
+        7)
+            systemctl restart $SERVICE
+            echo -e "${GREEN}✅ SERVICE RESTARTED${NC}"
+            read -n1 -r -p "Press any key to continue..."
+            ;;
+        x|X) exit;;
+        *) echo -e "${YELLOW}❌ Invalid option${NC}"; read -n1 -r -p "Press any key to continue...";;
+    esac
 done
 EOF
 
@@ -276,7 +259,7 @@ systemctl restart nialtv
 # ===== AUTO OPEN PANEL ON SSH LOGIN =====
 grep -qxF "$BASE/seller.sh" /etc/profile || echo "$BASE/seller.sh" >> /etc/profile
 
-# ===== AUTOREBOOT AFTER INSTALL (10 seconds notice) =====
+# ===== AUTOREBOOT AFTER INSTALL (10s) =====
 echo -e "${YELLOW}⚠️  System will reboot in 10 seconds to apply changes...${NC}"
 sleep 10
 reboot now
