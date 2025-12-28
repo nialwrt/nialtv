@@ -2,11 +2,11 @@
 set -Eeuo pipefail
 
 # =========================================
-# NIALTV PREMIUM – FULL AUTOSCRIPT
+# NIALTV PREMIUM – FULL AUTOSCRIPT + AUTO PANEL
 # Ubuntu 24.04 ONLY
 # =========================================
 
-GREEN="\e[1;32m"; NC="\e[0m"
+GREEN="\e[1;32m"; RED="\e[1;31m"; NC="\e[0m"
 BASE="/opt/nialtv"
 SERVICE="nialtv"
 
@@ -31,12 +31,12 @@ EMAIL="admin@$DOMAIN"
 
 # ===== BASIC DEPENDENCIES =====
 apt update -y
-apt install -y python3 python3-venv python3-pip \
-               curl jq certbot ufw ca-certificates
+apt install -y python3 python3-venv python3-pip curl jq certbot ufw ca-certificates
 
-# ===== FIREWALL (LETSENCRYPT NEEDS 80) =====
+# ===== FIREWALL =====
 ufw allow 22/tcp
 ufw allow 80/tcp
+ufw allow 443/tcp
 ufw allow 8080/tcp
 ufw --force enable
 
@@ -85,16 +85,13 @@ def player_api():
     ua = request.headers.get("User-Agent","")
 
     users = load_users()
-
     if u not in users:
         return jsonify({"user_info":{"auth":0}})
 
     user = users[u]
-
     if user["password"] != p or expired(user["expiry"]):
         return jsonify({"user_info":{"auth":0}})
 
-    # ===== ONE DEVICE ONLY (AUTO KICK) =====
     if user.get("ip") and user["ip"] != ip:
         user["ip"] = ip
         user["ua"] = ua
@@ -103,14 +100,7 @@ def player_api():
         user["ua"] = ua
 
     save_users(users)
-
-    return jsonify({
-        "user_info":{
-            "auth":1,
-            "username":u,
-            "exp_date":user["expiry"]
-        }
-    })
+    return jsonify({"user_info":{"auth":1,"username":u,"exp_date":user["expiry"]}})
 
 @app.route("/get.php")
 def get_m3u():
@@ -119,12 +109,10 @@ def get_m3u():
     ip = request.remote_addr
 
     users = load_users()
-
     if u not in users:
         return "Unauthorized",401
 
     user = users[u]
-
     if user["password"] != p or expired(user["expiry"]):
         return "Unauthorized",401
 
@@ -137,105 +125,131 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=8080,
-        ssl_context=(
-            f"/etc/letsencrypt/live/{DOMAIN}/fullchain.pem",
-            f"/etc/letsencrypt/live/{DOMAIN}/privkey.pem"
-        )
+        ssl_context=(f"/etc/letsencrypt/live/{DOMAIN}/fullchain.pem",
+                     f"/etc/letsencrypt/live/{DOMAIN}/privkey.pem")
     )
 EOF
 
 # ===== SELLER PANEL =====
 cat > seller.sh <<'EOF'
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
 
 BASE="/opt/nialtv"
 USERS="$BASE/users.json"
 source "$BASE/.env"
-
-GREEN="\e[1;32m"; NC="\e[0m"
+GREEN="\e[1;32m"; RED="\e[1;31m"; NC="\e[0m"
 
 while true; do
 clear
-echo -e "$GREEN"
-cat <<MENU
-╭════════════════════════════════════════════════════════╮
-│               📺 NIALTV PREMIUM PANEL                  │
-╰════════════════════════════════════════════════════════╯
-══════════════════════════════════════════════
- USERS   : $(jq length "$USERS")
- DATE    : $(date)
- SERVICE : $(systemctl is-active nialtv)
-══════════════════════════════════════════════
- [01] Create User
- [02] Remove User
- [03] Extend User
- [04] List Users
- [05] Update M3U
- [06] Kick Device
- [07] Restart Service
- [X]  Exit
-MENU
-echo -e "$NC"
-read -rp "Select: " opt
 
-case "$opt" in
+# ===== SYSTEM INFO =====
+OS=$(lsb_release -ds)
+RAM=$(free -m | awk '/Mem:/ {print $2 " MB"}')
+CPU=$(nproc --all) Core
+IP=$(curl -s ipinfo.io/ip)
+CITY=$(curl -s ipinfo.io/city)
+ISP=$(curl -s ipinfo.io/org)
+UPTIME=$(uptime -p | sed 's/up //')
+DATE_NOW=$(date "+%d-%m-%Y %H:%M:%S")
+CLIENTS=$(jq length "$USERS" 2>/dev/null || echo 0)
+EXP=$(jq -r '.[].expiry' "$USERS" 2>/dev/null | sort | tail -n1 || echo "N/A")
+SERVICE_STATUS=$(systemctl is-active nialtv || echo "inactive")
+NET_SPEED="0.00 Mbps"
+
+# ===== DISPLAY PANEL =====
+echo -e "$GREEN"
+cat <<EOF2
+╭════════════════════════════════════════════════════════╮
+│              ❄️ WELCOME TO PREMIUM SCRIPT ❄️           │
+╰════════════════════════════════════════════════════════╯
+      ══════════════════════════════════════════════
+       💻 OS           : $OS
+       💾 RAM          : $RAM
+       📟 CPU          : $CPU
+       📶 ISP          : $ISP
+       🌍 CITY         : $CITY
+       ⏳ UPTIME       : $UPTIME
+       📡 IP VPS       : $IP
+       🌐 DOMAIN       : ${DOMAIN:-N/A}
+       👨 CLIENTS      : $CLIENTS ACTIVE
+       📆 EXPIRED      : $EXP
+       🕒 DATE & TIME  : $DATE_NOW
+       🔗 VERSION CORE : NIALTV v1.0
+      ══════════════════════════════════════════════
+╭════════════════════════════╮╭══════════════════════════╮
+│  SERVICE STATUS: $SERVICE_STATUS  ││ SERVER SPEED: $NET_SPEED │
+╰════════════════════════════╯╰══════════════════════════╯
+╭════════════════════════╮╭═════════════╮╭═══════════════╮
+│     NIALTV PANEL MENU  │ TOTAL ACCOUNT │ BANDWIDTH USED│
+│ [01] • CREATE USER      │   $CLIENTS Accounts │  TODAY │
+│ [02] • REMOVE USER      │                     │       │
+│ [03] • EXTEND USER      │                     │       │
+│ [04] • LIST USERS       │                     │       │
+│ [05] • UPDATE M3U       │                     │       │
+│ [06] • KICK DEVICE      │                     │       │
+│ [07] • RESTART SERVICE  │                     │       │
+│ [X] • EXIT              │                     │       │
+╰════════════════════════╯╰═════════════╯╰═══════════════╯
+EOF2
+echo -e "$NC"
+
+read -rp "   Select From option [1-7 or x]: " opt
+
+case $opt in
 1)
  read -rp "Username   : " u
  read -rp "Password   : " p
  read -rp "Valid days : " d
- exp=\$(date -d "+\$d days" +%Y-%m-%d)
-
- jq ". + {\"\$u\":{
-   \"password\":\"\$p\",
-   \"expiry\":\"\$exp\",
-   \"ip\":\"\",
-   \"ua\":\"\"
- }}" "\$USERS" > /tmp/u && mv /tmp/u "\$USERS"
-
- clear
- cat <<INFO
-━━━━━━━━━━━━━━━━━━━━━━
-📺 NIALTV PREMIUM
-━━━━━━━━━━━━━━━━━━━━━━
-URL      : https://$DOMAIN:8080
-USERNAME : \$u
-PASSWORD : \$p
-EXP      : \$exp
-━━━━━━━━━━━━━━━━━━━━━━
-INFO
- read;;
+ exp=$(date -d "+$d days" +%Y-%m-%d)
+ jq ". + {\"$u\":{\"password\":\"$p\",\"expiry\":\"$exp\",\"ip\":\"\",\"ua\":\"\"}}" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+ echo -e "${GREEN}✅ USER CREATED: $u | EXP: $exp${NC}"
+ read -n1 -r -p "Press any key to continue..."
+ ;;
 2)
- read -rp "Username: " u
- jq "del(.\"\$u\")" "\$USERS" > /tmp/u && mv /tmp/u "\$USERS";;
+ read -rp "Username to remove: " u
+ jq "del(.\"$u\")" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+ echo -e "${RED}❌ USER REMOVED: $u${NC}"
+ read -n1 -r -p "Press any key to continue..."
+ ;;
 3)
- read -rp "Username: " u
- read -rp "Extend days: " d
- exp=\$(date -d "+\$d days" +%Y-%m-%d)
- jq ".\"\$u\".expiry=\"\$exp\"" "\$USERS" > /tmp/u && mv /tmp/u "\$USERS";;
+ read -rp "Username to extend: " u
+ read -rp "Extra days: " d
+ new_exp=$(date -d "+$d days" +%Y-%m-%d)
+ jq ".\"$u\".expiry=\"$new_exp\"" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+ echo -e "${GREEN}✅ USER $u EXTENDED TO $new_exp${NC}"
+ read -n1 -r -p "Press any key to continue..."
+ ;;
 4)
- jq . "\$USERS" | less;;
+ jq . "$USERS" | less
+ ;;
 5)
  read -rp "M3U URL: " url
- curl -fsSL "\$url" -o "$BASE/playlist.m3u";;
+ curl -fsSL "$url" -o "$BASE/playlist.m3u"
+ echo -e "${GREEN}✅ M3U UPDATED${NC}"
+ read -n1 -r -p "Press any key to continue..."
+ ;;
 6)
- read -rp "Username: " u
- jq ".\"\$u\".ip=\"\"" "\$USERS" > /tmp/u && mv /tmp/u "\$USERS";;
+ read -rp "Username to kick: " u
+ jq ".\"$u\".ip=\"\"" "$USERS" > /tmp/u && mv /tmp/u "$USERS"
+ echo -e "${GREEN}✅ DEVICE KICKED: $u${NC}"
+ read -n1 -r -p "Press any key to continue..."
+ ;;
 7)
- systemctl restart nialtv;;
+ systemctl restart $SERVICE
+ echo -e "${GREEN}✅ SERVICE RESTARTED${NC}"
+ read -n1 -r -p "Press any key to continue..."
+ ;;
 x|X) exit;;
+*) echo "❌ Invalid option"; read -n1 -r -p "Press any key to continue...";;
 esac
 done
 EOF
 
 chmod +x seller.sh
 
-# ===== SSL (AFTER PORT 80 OPEN) =====
-certbot certonly --standalone \
-  -d "$DOMAIN" \
-  -m "$EMAIL" \
-  --agree-tos \
-  --non-interactive
+# ===== SSL =====
+certbot certonly --standalone -d "$DOMAIN" -m "$EMAIL" --agree-tos --non-interactive
 
 # ===== SYSTEMD =====
 cat > /etc/systemd/system/nialtv.service <<EOF
@@ -256,6 +270,9 @@ EOF
 systemctl daemon-reload
 systemctl enable nialtv
 systemctl restart nialtv
+
+# ===== AUTO OPEN PANEL ON SSH LOGIN =====
+grep -qxF "$BASE/seller.sh" /etc/profile || echo "$BASE/seller.sh" >> /etc/profile
 
 echo -e "${GREEN}✅ INSTALL COMPLETE${NC}"
 echo "Seller Panel : $BASE/seller.sh"
