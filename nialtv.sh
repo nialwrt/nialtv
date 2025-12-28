@@ -16,13 +16,7 @@ BASE="/opt/nialtv"
 SERVICE="nialtv"
 
 clear
-echo -e "${GREEN}"
-cat <<'EOF'
-╭════════════════════════════════════════════════════════╮
-│                  📺 NIALTV PREMIUM                     │
-╰════════════════════════════════════════════════════════╯
-EOF
-echo -e "${NC}"
+echo -e "${GREEN}================= NIALTV PANEL =================${NC}"
 
 # ===== OS CHECK =====
 if ! lsb_release -rs | grep -q "^24"; then
@@ -152,22 +146,16 @@ while true; do
     URL="https://$DOMAIN:8080"
     SERVICE_STATUS=$(systemctl is-active $SERVICE || echo "inactive")
     CLIENTS=$(jq length "$USERS" 2>/dev/null || echo 0)
-    EXP=$(jq -r '.[].expiry' "$USERS" 2>/dev/null | sort | tail -n1 || echo "N/A")
 
     echo -e "${GREEN}================= NIALTV PANEL =================${NC}"
-    echo -e "${GREEN}OS           :${NC} $OS"
-    echo -e "${GREEN}RAM          :${NC} $RAM"
-    echo -e "${GREEN}CPU          :${NC} $CPU"
-    echo -e "${GREEN}IP           :${NC} $IP"
-    echo -e "${GREEN}DOMAIN       :${NC} $DOMAIN"
-    echo -e "${GREEN}URL          :${NC} $URL"
-    if [[ "$SERVICE_STATUS" == "active" ]]; then
-        echo -e "${GREEN}SERVICE      :✅ active${NC}"
-    else
-        echo -e "${RED}SERVICE      :❌ inactive${NC}"
-    fi
-    echo -e "${GREEN}Clients      :${NC} $CLIENTS"
-    echo -e "${GREEN}Next Expiry  :${NC} $EXP"
+    echo -e "OS       : $OS"
+    echo -e "RAM      : $RAM"
+    echo -e "CPU      : $CPU"
+    echo -e "IP       : $IP"
+    echo -e "DOMAIN   : $DOMAIN"
+    echo -e "URL      : $URL"
+    echo -e "SERVICE  : $SERVICE_STATUS"
+    echo -e "Clients  : $CLIENTS"
     echo -e "${GREEN}==============================================${NC}"
 
     echo -e "[1] Create User"
