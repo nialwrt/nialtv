@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # =========================================
-# NIALTV PREMIUM – FULL AUTOSCRIPT + AUTO PANEL
+# NIALTV PREMIUM – FULL AUTOSCRIPT + AUTO PANEL + AUTOREBOOT
 # Ubuntu 24.04 ONLY
 # =========================================
 
@@ -43,7 +43,6 @@ ufw --force enable
 # ===== DIRECTORIES =====
 mkdir -p "$BASE"
 cd "$BASE"
-
 echo "DOMAIN=$DOMAIN" > .env
 echo "{}" > users.json
 echo "#EXTM3U" > playlist.m3u
@@ -138,15 +137,16 @@ set -Eeuo pipefail
 BASE="/opt/nialtv"
 USERS="$BASE/users.json"
 source "$BASE/.env"
+
 GREEN="\e[1;32m"; RED="\e[1;31m"; NC="\e[0m"
+SERVICE="nialtv"
 
 while true; do
 clear
 
-# ===== SYSTEM INFO =====
 OS=$(lsb_release -ds)
 RAM=$(free -m | awk '/Mem:/ {print $2 " MB"}')
-CPU=$(nproc --all) Core
+CPU="$(nproc --all) Core"
 IP=$(curl -s ipinfo.io/ip)
 CITY=$(curl -s ipinfo.io/city)
 ISP=$(curl -s ipinfo.io/org)
@@ -154,10 +154,9 @@ UPTIME=$(uptime -p | sed 's/up //')
 DATE_NOW=$(date "+%d-%m-%Y %H:%M:%S")
 CLIENTS=$(jq length "$USERS" 2>/dev/null || echo 0)
 EXP=$(jq -r '.[].expiry' "$USERS" 2>/dev/null | sort | tail -n1 || echo "N/A")
-SERVICE_STATUS=$(systemctl is-active nialtv || echo "inactive")
+SERVICE_STATUS=$(systemctl is-active $SERVICE || echo "inactive")
 NET_SPEED="0.00 Mbps"
 
-# ===== DISPLAY PANEL =====
 echo -e "$GREEN"
 cat <<EOF2
 ╭════════════════════════════════════════════════════════╮
@@ -277,3 +276,8 @@ grep -qxF "$BASE/seller.sh" /etc/profile || echo "$BASE/seller.sh" >> /etc/profi
 echo -e "${GREEN}✅ INSTALL COMPLETE${NC}"
 echo "Seller Panel : $BASE/seller.sh"
 echo "Xtream URL   : https://$DOMAIN:8080"
+
+# ===== REBOOT SERVER =====
+echo -e "${YELLOW}System will reboot in 5 seconds to apply all changes...${NC}"
+sleep 5
+reboot
