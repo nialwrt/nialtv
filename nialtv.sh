@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # =========================================
-# NIALTV PREMIUM – FULL AUTOSCRIPT + AUTO PANEL + AUTO REBOOT
+# NIALTV PREMIUM – FULL AUTOSCRIPT + AUTO PANEL
 # Ubuntu 24.04 ONLY
 # =========================================
 
@@ -26,7 +26,7 @@ echo -e "${NC}"
 
 # ===== OS CHECK =====
 if ! lsb_release -rs | grep -q "^24"; then
-  echo "❌ This script supports Ubuntu 24.04 only"
+  echo -e "${RED}❌ This script supports Ubuntu 24.04 only${NC}"
   exit 1
 fi
 
@@ -88,22 +88,18 @@ def player_api():
     p = request.args.get("password")
     ip = request.remote_addr
     ua = request.headers.get("User-Agent","")
-
     users = load_users()
     if u not in users:
         return jsonify({"user_info":{"auth":0}})
-
     user = users[u]
     if user["password"] != p or expired(user["expiry"]):
         return jsonify({"user_info":{"auth":0}})
-
     if user.get("ip") and user["ip"] != ip:
         user["ip"] = ip
         user["ua"] = ua
     else:
         user["ip"] = ip
         user["ua"] = ua
-
     save_users(users)
     return jsonify({"user_info":{"auth":1,"username":u,"exp_date":user["expiry"]}})
 
@@ -112,18 +108,14 @@ def get_m3u():
     u = request.args.get("username")
     p = request.args.get("password")
     ip = request.remote_addr
-
     users = load_users()
     if u not in users:
         return "Unauthorized",401
-
     user = users[u]
     if user["password"] != p or expired(user["expiry"]):
         return "Unauthorized",401
-
     if user.get("ip") and user["ip"] != ip:
         return "Device limit",403
-
     return Response(open(PLAYLIST).read(), mimetype="audio/x-mpegurl")
 
 if __name__ == "__main__":
@@ -143,7 +135,11 @@ set -Eeuo pipefail
 BASE="/opt/nialtv"
 USERS="$BASE/users.json"
 source "$BASE/.env"
-GREEN="\e[1;32m"; RED="\e[1;31m"; YELLOW="\e[1;33m"; NC="\e[0m"
+
+GREEN="\e[1;32m"
+RED="\e[1;31m"
+YELLOW="\e[1;33m"
+NC="\e[0m"
 SERVICE="nialtv"
 
 while true; do
@@ -152,7 +148,7 @@ clear
 # ===== SYSTEM INFO =====
 OS=$(lsb_release -ds)
 RAM=$(free -m | awk '/Mem:/ {print $2 " MB"}')
-CPU=$(nproc --all) Core
+CPU="$(nproc --all) Core"
 IP=$(curl -s ipinfo.io/ip)
 CITY=$(curl -s ipinfo.io/city)
 ISP=$(curl -s ipinfo.io/org)
@@ -247,7 +243,7 @@ case $opt in
  read -n1 -r -p "Press any key to continue..."
  ;;
 x|X) exit;;
-*) echo "❌ Invalid option"; read -n1 -r -p "Press any key to continue...";;
+*) echo -e "${YELLOW}❌ Invalid option${NC}"; read -n1 -r -p "Press any key to continue...";;
 esac
 done
 EOF
@@ -280,7 +276,7 @@ systemctl restart nialtv
 # ===== AUTO OPEN PANEL ON SSH LOGIN =====
 grep -qxF "$BASE/seller.sh" /etc/profile || echo "$BASE/seller.sh" >> /etc/profile
 
-# ===== AUTO REBOOT AFTER INSTALL =====
-echo -e "${YELLOW}⚠️  System will reboot in 10 seconds...${NC}"
+# ===== AUTOREBOOT AFTER INSTALL (10 seconds notice) =====
+echo -e "${YELLOW}⚠️  System will reboot in 10 seconds to apply changes...${NC}"
 sleep 10
-reboot
+reboot now
