@@ -1,117 +1,172 @@
 #!/bin/bash
-# ott.sh - Full SSH management menu
-set -euo pipefail
+set -e
 
-BASE="/opt/ott"
-DATA="$BASE/data"
-LOG="$BASE/logs"
+echo "=== INSTALLING OTT TV M3U PROVIDER ==="
 
-mkdir -p $DATA $LOG
+# Dependency
+apt update
+apt install -y python3 jq wget curl
 
-# ------------------------
-# Function: Show summary
-# ------------------------
-info_summary() {
-clients=$(jq 'keys | length' $DATA/clients.json)
-active=$(jq '[.[] | select(.status=="active")] | length' $DATA/clients.json)
-suspended=$(jq '[.[] | select(.status=="suspended")] | length' $DATA/clients.json)
-expired=$(jq '[.[] | select(.expire < "'$(date +%F)'")] | length' $DATA/clients.json)
-sessions=$(jq 'keys | length' $DATA/sessions.json 2>/dev/null || echo 0)
-echo -e "\e[1;33m[INFO]\e[0m Total Clients: $clients | Active: $active | Suspended: $suspended | Expired: $expired | Online: $sessions"
-}
+# Directory
+mkdir -p /opt/ott/{data,seed,public/playlist}
+[ ! -f /opt/ott/data/clients.json ] && echo '{}' > /opt/ott/data/clients.json
+[ ! -f /opt/ott/data/sessions.json ] && echo '{}' > /opt/ott/data/sessions.json
 
-# ------------------------
-# Function: List clients with details
-# ------------------------
-list_clients() {
-jq -r 'to_entries[] | "\(.key) | Status: \(.value.status) | Expire: \(.value.expire) | Pass: \(.value.pass) | Online: \(.value.device // "None")"' $DATA/clients.json
-}
+# ================= ENGINE =================
+cat << 'EOF' > /opt/ott/engine.py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json, time, os
 
-# ------------------------
-# Menu Functions
-# ------------------------
-create_id() {
-read -p "Username: " u
-read -p "Days valid: " d
-exp=$(date -d "+$d days" +%F)
-pass=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
-jq ". + {\"$u\": {\"pass\":\"$pass\",\"expire\":\"$exp\",\"status\":\"active\"}}" \
-$DATA/clients.json > /tmp/c && mv /tmp/c $DATA/clients.json
-echo -e "\e[1;32m[OK]\e[0m CREATED: $u | $pass | $exp"
-}
+BASE = "/opt/ott"
+CLIENTS = f"{BASE}/data/clients.json"
+SESSIONS = f"{BASE}/data/sessions.json"
+SEED = f"{BASE}/seed/seed.m3u"
 
-renew_id() {
-read -p "Username: " u
-read -p "Extend days: " d
-new=$(date -d "+$d days" +%F)
-jq ".\"$u\".expire=\"$new\"" $DATA/clients.json > /tmp/c && mv /tmp/c $DATA/clients.json
-echo -e "\e[1;32m[OK]\e[0m RENEWED: $u -> $new"
-}
+def load(p):
+    if not os.path.exists(p):
+        return {}
+    with open(p) as f:
+        return json.load(f)
 
-delete_id() {
-read -p "Username: " u
-jq "del(.\"$u\")" $DATA/clients.json > /tmp/c && mv /tmp/c $DATA/clients.json
-echo -e "\e[1;31m[DEL]\e[0m Deleted: $u"
-}
+def save(p,d):
+    with open(p,'w') as f:
+        json.dump(d,f,indent=2)
 
-suspend_id() {
-read -p "Username: " u
-jq ".\"$u\".status=\"suspended\"" $DATA/clients.json > /tmp/c && mv /tmp/c $DATA/clients.json
-echo -e "\e[1;33m[SUSP]\e[0m Suspended: $u"
-}
+class OTT(BaseHTTPRequestHandler):
 
-unsuspend_id() {
-read -p "Username: " u
-jq ".\"$u\".status=\"active\"" $DATA/clients.json > /tmp/c && mv /tmp/c $DATA/clients.json
-echo -e "\e[1;32m[ACTIVE]\e[0m Activated: $u"
-}
+    def deny(self, code=403):
+        self.send_response(code)
+        self.end_headers()
 
-seed_m3u() {
-read -p "M3U URL: " url
-wget -qO /tmp/src.m3u "$url"
-awk '
-/^#EXTINF/ {
-  gsub(/tvg-id="[^"]*"/,"tvg-id=\"ott-dummy\"")
-  print
-  getline
-  print "http://server/live/${CLIENT}/${CHANNEL}.m3u8"
-}' /tmp/src.m3u > $BASE/master.m3u
-echo -e "\e[1;32m[OK]\e[0m M3U seeded -> $BASE/master.m3u"
-}
+    def do_GET(self):
+        if not self.path.startswith("/playlist/"):
+            self.deny(404); return
 
-menu() {
+        user = self.path.split("/")[-1].replace(".m3u","")
+        now = int(time.time())
+
+        clients = load(CLIENTS)
+        sessions = load(SESSIONS)
+
+        if user not in clients:
+            self.deny(); return
+
+        c = clients[user]
+        if c["status"] != "active" or now > c["exp"]:
+            c["status"] = "expired"
+            save(CLIENTS, clients)
+            self.deny(); return
+
+        ip = self.client_address[0]
+
+        # STRICT 1 DEVICE
+        sessions[user] = {
+            "ip": ip,
+            "time": now
+        }
+        save(SESSIONS, sessions)
+
+        self.send_response(200)
+        self.send_header("Content-Type","audio/x-mpegurl")
+        self.end_headers()
+
+        with open(SEED, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                self.wfile.write(line.encode())
+
+HTTPServer(("",8080),OTT).serve_forever()
+EOF
+
+# ================= SERVICE =================
+cat << EOF > /etc/systemd/system/ott.service
+[Unit]
+Description=OTT Dummy M3U Provider
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/ott/engine.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now ott
+
+# ================= PANEL =================
+cat << 'EOF' > /opt/ott/panel.sh
+#!/bin/bash
+BASE=/opt/ott
+CLIENTS=$BASE/data/clients.json
+IP=$(hostname -I | awk '{print $1}')
+
 clear
-echo -e "\e[1;34m=== OTT TV M3U Provider Panel ===\e[0m"
-info_summary
-echo "
-1) Create ID
-2) Renew ID
-3) Delete ID
-4) Suspend ID
-5) Unsuspend ID
-6) List Clients
-7) Seed M3U
-0) Exit
-"
-read -p "Select: " opt
-case $opt in
-1) create_id ;;
-2) renew_id ;;
-3) delete_id ;;
-4) suspend_id ;;
-5) unsuspend_id ;;
-6) list_clients ;;
-7) seed_m3u ;;
-0) exit ;;
-*) echo "Invalid";;
-esac
-read -p "Press Enter to continue..." key
-menu
-}
+echo "=== OTT TV M3U PROVIDER PANEL ==="
+echo "Service Status : $(systemctl is-active ott)"
+echo "Server IP     : $IP"
+echo
 
-# ------------------------
-# Auto menu on SSH login
-# ------------------------
-if [[ $SSH_CONNECTION ]]; then
-  menu
-fi
+TOTAL=$(jq length $CLIENTS)
+ACTIVE=$(jq '[.[]|select(.status=="active")]|length' $CLIENTS)
+EXPIRED=$(jq '[.[]|select(.status=="expired")]|length' $CLIENTS)
+SUSP=$(jq '[.[]|select(.status=="suspend")]|length' $CLIENTS)
+
+echo "Total Client  : $TOTAL"
+echo "Active        : $ACTIVE"
+echo "Expired       : $EXPIRED"
+echo "Suspended     : $SUSP"
+echo
+echo "1) Add Client"
+echo "2) Renew Client"
+echo "3) Suspend Client"
+echo "4) Delete Client"
+echo "5) Update Seed M3U"
+echo "0) Exit"
+echo
+read -p "Select: " x
+
+case $x in
+1)
+ read -p "Username : " u
+ read -p "Valid days : " d
+ exp=$(date -d "+$d days" +%s)
+ jq ". + {\"$u\":{\"exp\":$exp,\"status\":\"active\"}}" $CLIENTS > /tmp/c && mv /tmp/c $CLIENTS
+ echo
+ echo "Client Created"
+ echo "Username : $u"
+ echo "Expiry   : $(date -d @$exp)"
+ echo "M3U URL  : http://$IP:8080/playlist/$u.m3u"
+ ;;
+2)
+ read -p "Username : " u
+ read -p "Extend days : " d
+ exp=$(date -d "+$d days" +%s)
+ jq ".\"$u\".exp=$exp | .\"$u\".status=\"active\"" $CLIENTS > /tmp/c && mv /tmp/c $CLIENTS
+ echo "Renewed until $(date -d @$exp)"
+ ;;
+3)
+ read -p "Username : " u
+ jq ".\"$u\".status=\"suspend\"" $CLIENTS > /tmp/c && mv /tmp/c $CLIENTS
+ echo "Client suspended"
+ ;;
+4)
+ read -p "Username : " u
+ jq "del(.\"$u\")" $CLIENTS > /tmp/c && mv /tmp/c $CLIENTS
+ echo "Client deleted"
+ ;;
+5)
+ read -p "Seed M3U URL : " s
+ wget -O $BASE/seed/seed.m3u "$s"
+ echo "Seed updated"
+ ;;
+esac
+EOF
+
+chmod +x /opt/ott/panel.sh
+
+# Auto load panel
+grep -q ott/panel.sh /root/.bashrc || echo "/opt/ott/panel.sh" >> /root/.bashrc
+
+echo "=== INSTALLATION COMPLETE ==="
+echo "Logout & login semula SSH untuk buka panel"
